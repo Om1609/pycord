@@ -22,11 +22,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 """
+import asyncio
 import io
 import os
 import struct
 import sys
-import threading
 import time
 from typing import TYPE_CHECKING
 
@@ -84,14 +84,13 @@ class Filters:
 
     def init(self):
         if self.seconds != 0:
-            thread = threading.Thread(target=self.wait_and_stop)
-            thread.start()
+            self.vc.loop.create_task(self.wait_and_stop())
 
-    def wait_and_stop(self):
-        time.sleep(self.seconds)
+    async def wait_and_stop(self):
+        await asyncio.sleep(self.seconds)
         if self.finished:
             return
-        self.vc.stop_recording()
+        await self.vc.stop_recording()
 
 
 class RawData:

@@ -26,6 +26,7 @@ DEALINGS IN THE SOFTWARE.
 from __future__ import annotations
 
 import array
+import asyncio
 import ctypes
 import ctypes.util
 import gc
@@ -34,8 +35,6 @@ import math
 import os.path
 import struct
 import sys
-import threading
-import time
 from typing import TYPE_CHECKING, Any, Callable, Literal, TypedDict, TypeVar
 
 from .errors import DiscordException
@@ -518,29 +517,28 @@ class Decoder(_OpusStruct):
         return array.array("h", pcm[: ret * channel_count]).tobytes()
 
 
-class DecodeManager(threading.Thread, _OpusStruct):
+class DecodeManager(_OpusStruct):
     def __init__(self, client):
-        super().__init__(daemon=True, name="DecodeManager")
+        super().__init__()
 
         self.client = client
-        self.decode_queue = []
+        self.decode_queue = asyncio.Queue()
 
         self.decoder = {}
 
-        self._end_thread = threading.Event()
+        self._end_thread = asyncio.Event()
 
     def decode(self, opus_frame):
         if not isinstance(opus_frame, RawData):
             raise TypeError("opus_frame should be a RawData object.")
-        self.decode_queue.append(opus_frame)
+        self.decode_queue.put_nowait(opus_frame)
 
-    def run(self):
+    async def start(self):
+        await self.run()
+
+    async def run(self):
         while not self._end_thread.is_set():
-            try:
-                data = self.decode_queue.pop(0)
-            except IndexError:
-                time.sleep(0.001)
-                continue
+            data = await self.decode_queue.get()
 
             try:
                 if data.decrypted_data is None:
@@ -553,11 +551,11 @@ class DecodeManager(threading.Thread, _OpusStruct):
                 print("Error occurred while decoding opus frame.")
                 continue
 
-            self.client.recv_decoded_audio(data)
+            self.client.loop.create_task(self.client.recv_decoded_audio(data))
 
-    def stop(self):
+    async def stop(self):
         while self.decoding:
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
             self.decoder = {}
             gc.collect()
             print("Decoder Process Killed")
@@ -572,4 +570,4 @@ class DecodeManager(threading.Thread, _OpusStruct):
 
     @property
     def decoding(self):
-        return bool(self.decode_queue)
+        return bool(self.decode_queue.empty())

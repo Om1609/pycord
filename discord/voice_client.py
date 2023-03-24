@@ -739,23 +739,15 @@ class VoiceClient(VoiceProtocol):
         self.empty_socket()
 
         self.decoder = opus.DecodeManager(self)
-        self.decoder.start()
+        self.loop.create_task(self.decoder.start())
         self.recording = True
         self.sync_start = sync_start
         self.sink = sink
         sink.init(self)
 
-        t = threading.Thread(
-            target=self.recv_audio,
-            args=(
-                sink,
-                callback,
-                *args,
-            ),
-        )
-        t.start()
+        self.loop.create_task(self.recv_audio(sink, callback, *args))
 
-    def stop_recording(self):
+    async def stop_recording(self):
         """Stops the recording.
         Must be already recording.
 
@@ -768,7 +760,7 @@ class VoiceClient(VoiceProtocol):
         """
         if not self.recording:
             raise RecordingException("Not currently recording audio.")
-        self.decoder.stop()
+        await self.decoder.stop()
         self.recording = False
         self.paused = False
 
@@ -795,7 +787,7 @@ class VoiceClient(VoiceProtocol):
             for s in ready:
                 s.recv(4096)
 
-    def recv_audio(self, sink, callback, *args):
+    async def recv_audio(self, sink, callback, *args):
         # Gets data from _recv_audio and sorts
         # it by user, handles pcm files and
         # silence that should be added.
@@ -811,24 +803,22 @@ class VoiceClient(VoiceProtocol):
                 continue
 
             try:
-                data = self.socket.recv(4096)
+                # data = self.socket.recv(4096)
+                data = await self.loop.sock_recv(self.socket, 4096)
             except OSError:
-                self.stop_recording()
+                await self.stop_recording()
                 continue
 
             self.unpack_audio(data)
 
         self.stopping_time = time.perf_counter()
         self.sink.cleanup()
-        callback = asyncio.run_coroutine_threadsafe(
-            callback(self.sink, *args), self.loop
-        )
-        result = callback.result()
+        result = await callback(sink, *args)
 
         if result is not None:
             print(result)
 
-    def recv_decoded_audio(self, data):
+    async def recv_decoded_audio(self, data):
         # Add silence when they were not being recorded.
         if data.ssrc not in self.user_timestamps:  # First packet from user
             if (
@@ -854,7 +844,7 @@ class VoiceClient(VoiceProtocol):
         )
 
         while data.ssrc not in self.ws.ssrc_map:
-            time.sleep(0.05)
+            await asyncio.sleep(0.05)
         self.sink.write(data.decoded_data, self.ws.ssrc_map[data.ssrc]["user_id"])
 
     def is_playing(self) -> bool:

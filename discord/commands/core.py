@@ -96,19 +96,18 @@ else:
 
 
 def wrap_callback(coro):
-    from ..ext.commands.errors import CommandError
-
     @functools.wraps(coro)
     async def wrapped(*args, **kwargs):
         try:
             ret = await coro(*args, **kwargs)
         except ApplicationCommandError:
             raise
-        except CommandError:
-            raise
         except asyncio.CancelledError:
             return
         except Exception as exc:
+            # Using __name__ to avoid importing CommandError, which would cause a circular import
+            if exc.__class__.__name__ == "CommandError":
+                raise
             raise ApplicationCommandInvokeError(exc) from exc
         return ret
 
@@ -116,19 +115,17 @@ def wrap_callback(coro):
 
 
 def hooked_wrapped_callback(command, ctx, coro):
-    from ..ext.commands.errors import CommandError
-
     @functools.wraps(coro)
     async def wrapped(arg):
         try:
             ret = await coro(arg)
         except ApplicationCommandError:
             raise
-        except CommandError:
-            raise
         except asyncio.CancelledError:
             return
         except Exception as exc:
+            if exc.__class__.__name__ == "CommandError":
+                raise
             raise ApplicationCommandInvokeError(exc) from exc
         finally:
             if (
@@ -294,18 +291,17 @@ class ApplicationCommand(_BaseCommand, Generic[CogT, P, T]):
                 f"The check functions for the command {self.name} failed"
             )
 
-        if hasattr(self, "_max_concurrency"):
-            if self._max_concurrency is not None:
-                # For this application, context can be duck-typed as a Message
-                await self._max_concurrency.acquire(ctx)  # type: ignore # ctx instead of non-existent message
+        if self._max_concurrency:
+            # For this application, context can be duck-typed as a Message
+            await self._max_concurrency.acquire(ctx)  # type: ignore # ctx instead of non-existent message
 
-            try:
-                self._prepare_cooldowns(ctx)
-                await self.call_before_hooks(ctx)
-            except:
-                if self._max_concurrency is not None:
-                    await self._max_concurrency.release(ctx)  # type: ignore # ctx instead of non-existent message
-                raise
+        try:
+            self._prepare_cooldowns(ctx)
+            await self.call_before_hooks(ctx)
+        except:
+            if self._max_concurrency:
+                await self._max_concurrency.release(ctx)  # type: ignore # ctx instead of non-existent message
+            raise
 
     def is_on_cooldown(self, ctx: ApplicationContext) -> bool:
         """Checks whether the command is currently on cooldown.
@@ -1152,6 +1148,27 @@ class SlashCommandGroup(ApplicationCommand):
         self.description_localizations: dict[str, str] = kwargs.get(
             "description_localizations", MISSING
         )
+
+        from ..ext.commands.cooldowns import BucketType, CooldownMapping, MaxConcurrency
+
+        cooldown = getattr(self, "__commands_cooldown__", kwargs.get("cooldown"))
+
+        if cooldown is None:
+            buckets = CooldownMapping(cooldown, BucketType.default)
+        elif isinstance(cooldown, CooldownMapping):
+            buckets = cooldown
+        else:
+            raise TypeError(
+                "Cooldown must be a an instance of CooldownMapping or None."
+            )
+
+        self._buckets: CooldownMapping = buckets
+
+        max_concurrency = getattr(
+            self, "__commands_max_concurrency__", kwargs.get("max_concurrency")
+        )
+
+        self._max_concurrency: MaxConcurrency | None = max_concurrency
 
     @property
     def module(self) -> str | None:
